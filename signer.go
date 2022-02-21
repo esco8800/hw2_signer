@@ -9,10 +9,10 @@ import (
 	"time"
 )
 
-const COUT_ITER = 6
+const ITER = 6
 
 func main() {
-	inputData := []int{0, 1}
+	inputData := []int{0, 1, 1, 2, 3, 5, 8}
 	testResult := "NOT SET"
 
 	hashSignJobs := []job{
@@ -37,9 +37,7 @@ func main() {
 	}
 
 	start := time.Now()
-
 	ExecutePipeline(hashSignJobs...)
-
 	end := time.Since(start)
 
 	fmt.Println(testResult)
@@ -115,28 +113,26 @@ var MultiHash = func(in, out chan interface{}) {
 }
 
 func workerMultiHash(wg *sync.WaitGroup, val interface{}, out chan interface{}) {
-	defer wg.Done()
-	hashes := make(chan string, COUT_ITER)
-
+	hashArray := make([]string, ITER)
 	wgMulti := &sync.WaitGroup{}
-	for i := 0; i < COUT_ITER; i++ {
+	defer wg.Done()
+
+	for i := 0; i < ITER; i++ {
 		wgMulti.Add(1)
-		go calculateMultiHash(wgMulti, hashes, val.(string), i)
+		val := strconv.Itoa(i) + val.(string)
+		go calculateMultiHash(wgMulti, val, hashArray, i)
 	}
 	wgMulti.Wait()
 
-	res := ""
-	for i := 0; i < COUT_ITER; i++ {
-		res += <- hashes
-	}
-
+	res := strings.Join(hashArray, "")
 	fmt.Println("MultiHash " + res)
 	out <- res
 }
 
-func calculateMultiHash(wg *sync.WaitGroup, hashes chan string, val string, i int) {
+func calculateMultiHash(wg *sync.WaitGroup, val string, array []string, index int){
 	defer wg.Done()
-	hashes <- DataSignerCrc32(strconv.Itoa(i) + val)
+	crc32hash := DataSignerCrc32(val)
+	array[index] = crc32hash
 }
 
 var CombineResults = func(in, out chan interface{}) {
