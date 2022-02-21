@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const COUT_ITER = 6
+
 func main() {
 	inputData := []int{0, 1}
 	testResult := "NOT SET"
@@ -21,17 +23,17 @@ func main() {
 			fmt.Println("first job")
 		}),
 		job(SingleHash),
-		//job(MultiHash),
-		//job(CombineResults),
-		//job(func(in, out chan interface{}) {
-		//	dataRaw := <-in
-		//	data, ok := dataRaw.(string)
-		//	if !ok {
-		//		panic("cant convert result data to string")
-		//	}
-		//	testResult = data
-		//	fmt.Println("last job")
-		//}),
+		job(MultiHash),
+		job(CombineResults),
+		job(func(in, out chan interface{}) {
+			dataRaw := <-in
+			data, ok := dataRaw.(string)
+			if !ok {
+				panic("cant convert result data to string")
+			}
+			testResult = data
+			fmt.Println("last job")
+		}),
 	}
 
 	start := time.Now()
@@ -46,77 +48,95 @@ func main() {
 
 func ExecutePipeline(jobs ...job)  {
 	wg := &sync.WaitGroup{}
+	in := make(chan interface{})
 
-	firstJob := jobs[0]
-	in := gen(firstJob, wg)
-	jobs = append(jobs[:0], jobs[1:]...)
-
-	SingleHash := func () chan interface{} {
-		out := make(chan interface{})
+	for _, worker := range jobs {
 		wg.Add(1)
-		go func (wg *sync.WaitGroup) {
-			defer wg.Done()
-			SingleHash(in, out)
-		}(wg)
-		return out
-	}
-
-	MultiHash := func () chan interface{} {
 		out := make(chan interface{})
-		wg.Add(1)
-		go func (wg *sync.WaitGroup) {
-			defer wg.Done()
-			MultiHash(SingleHash(), out)
-		}(wg)
-		return out
+		go executeWorker(worker, wg, in, out)
+		in = out
 	}
-
-	CombineResults := func () chan interface{} {
-		out := make(chan interface{})
-		wg.Add(1)
-		go func (wg *sync.WaitGroup) {
-			defer wg.Done()
-			CombineResults(MultiHash(), out)
-		}(wg)
-		return out
-	}
-
-	CombineResults()
 	wg.Wait()
 }
 
-func gen(firstJob job,wg *sync.WaitGroup) chan interface{} {
-	out := make(chan interface{})
-	wg.Add(1)
-	go func (wg *sync.WaitGroup) {
-		defer wg.Done()
-		firstJob(make(chan interface{}), out)
-		close(out)
-	}(wg)
-	return out
+func executeWorker(worker job, wg *sync.WaitGroup, in, out chan interface{})  {
+	defer wg.Done()
+	defer close(out)
+	worker(in, out)
 }
 
 var SingleHash = func(in, out chan interface{}) {
+	wg := &sync.WaitGroup{}
+
 	for val := range in {
-		res := DataSignerCrc32(strconv.Itoa(val.(int))) + "~" + DataSignerCrc32(DataSignerMd5(strconv.Itoa(val.(int))))
-		fmt.Println("SingleHash " + res)
-		out <- res
+		val := strconv.Itoa(val.(int))
+		md5 := DataSignerMd5(val)
+		wg.Add(1)
+		go workerSingleHash(wg, val, md5, out)
 	}
-	close(out)
+
+	wg.Wait()
 	fmt.Println("End job SingleHash")
 }
 
+func workerSingleHash(wg *sync.WaitGroup, val string, md5 string, out chan interface{}) {
+	defer wg.Done()
+
+	ch32 := make(chan string)
+	chMd5 := make(chan string)
+
+	go calculateHash(ch32, val, DataSignerCrc32)
+	go calculateHash(chMd5, md5, DataSignerCrc32)
+
+	res32Hash := <-ch32
+	resMd5Hash := <-chMd5
+
+	res := res32Hash + "~" + resMd5Hash
+
+	fmt.Println("SingleHash " + res)
+	out <- res
+}
+
+func calculateHash(ch chan string, data string, f func(string) string){
+	res := f(data)
+	ch <- res
+}
+
 var MultiHash = func(in, out chan interface{}) {
+	wg := &sync.WaitGroup{}
+
 	for val := range in {
-		res := ""
-		for i := 0; i < 6; i++ {
-			res += DataSignerCrc32(strconv.Itoa(i) + val.(string))
-		}
-		fmt.Println("MultiHash " + res)
-		out <- res
+		wg.Add(1)
+		go workerMultiHash(wg, val, out)
 	}
-	close(out)
+
+	wg.Wait()
 	fmt.Println("End job MultiHash")
+}
+
+func workerMultiHash(wg *sync.WaitGroup, val interface{}, out chan interface{}) {
+	defer wg.Done()
+	hashes := make(chan string, COUT_ITER)
+
+	wgMulti := &sync.WaitGroup{}
+	for i := 0; i < COUT_ITER; i++ {
+		wgMulti.Add(1)
+		go calculateMultiHash(wgMulti, hashes, val.(string), i)
+	}
+	wgMulti.Wait()
+
+	res := ""
+	for i := 0; i < COUT_ITER; i++ {
+		res += <- hashes
+	}
+
+	fmt.Println("MultiHash " + res)
+	out <- res
+}
+
+func calculateMultiHash(wg *sync.WaitGroup, hashes chan string, val string, i int) {
+	defer wg.Done()
+	hashes <- DataSignerCrc32(strconv.Itoa(i) + val)
 }
 
 var CombineResults = func(in, out chan interface{}) {
@@ -130,8 +150,7 @@ var CombineResults = func(in, out chan interface{}) {
 	})
 	strRes := strings.Join(res, "_")
 
-	//out <- strRes
-	close(out)
+	out <- strRes
 
 	fmt.Println("CombineResults " + strRes)
 	fmt.Println("End job CombineResults")
